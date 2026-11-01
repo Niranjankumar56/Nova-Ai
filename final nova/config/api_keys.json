@@ -1,0 +1,10 @@
+{
+    "gemini_api_key": "AQ.Ab8RN6LUvUIYAmPZFrYeluNXy6XTw7b2Q7ghgHyShR8gcCZSmw",
+    "os_system": "windows",
+    "morning_brief_enabled": true,
+    "interaction_mode": "safe",
+    "hud_style": "core",
+    "push_to_talk_enabled": false,
+    "camera_index": 0,
+    "wake_word_enabled": false
+}

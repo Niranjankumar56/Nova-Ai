@@ -1,0 +1,427 @@
+--- orig
+
++++ curr
+
+@@ -473,5 +473,4 @@
+
+         self._is_speaking         = False
+         self._speaking_lock       = threading.Lock()
+-        self._phone_active        = False
+         self._pending_vision       = None
+         self._vision_cam_active    = False
+@@ -493,5 +492,4 @@
+
+         self.ui.ptt_hold          = self._on_ptt
+         self.ui.on_text_command   = self._on_text_command
+-        self.ui.on_remote_clicked = self._make_remote_key
+         self.ui.on_interrupt      = self.interrupt
+         self.ui.on_voice_change   = self._on_voice_change
+@@ -528,10 +526,8 @@
+
+             notify=lambda msg: self.ui.write_log(f"SYS: {msg}"),
+         )
+-        self.ui.get_plugins = self._plugin_registry.list_for_ui
+-        self.ui.get_plugin_settings = self._plugin_registry.settings_schemas
+         self.ui.request_say = self.plugin_say
+ 
+         self._wake_enabled     = get_wake_word_enabled()
+-        self._awake            = not self._wake_enabled
++        self._awake            = False  # Default to safe inactive / sleeping state on startup
+         self._wake_detector: WakeWordDetector | None = None
+         self._wake_sleep_timeout = WAKE_SLEEP_TIMEOUT
+@@ -567,5 +563,7 @@
+
+         return True
+ 
+-    def _handle_voice_stop(self) -> None:
++    def stop_all_activity(self) -> None:
++        """Immediately halt all running tasks, voice, automation, and actions."""
++        print("[NOVA] [EMERGENCY STOP] Halting all background activity.")
+         try:
+             from core.action_planner import request_stop
+@@ -574,11 +572,35 @@
+
+             pass
+         self.interrupt()
+-        self.ui.write_log("SYS: 🛑 Automation stopped.")
++        self.sleep(reason="emergency stop requested")
++        self.ui.write_log("SYS: 🛑 All background activity halted.")
+         self.ui.set_activity("Stopped")
+ 
++    def stop(self) -> None:
++        """Clean shutdown of assistant when application closes."""
++        print("[NOVA] [SHUTDOWN] Shutting down Nova assistant...")
++        self._awake = False
++        if self._wake_detector:
++            try:
++                self._wake_detector.stop()
++            except Exception:
++                pass
++        if self._ptt:
++            try:
++                self._ptt.stop()
++            except Exception:
++                pass
++        if self._loop and self._loop.is_running():
++            try:
++                for task in asyncio.all_tasks(self._loop):
++                    task.cancel()
++            except Exception:
++                pass
++
++    def _handle_voice_stop(self) -> None:
++        self.stop_all_activity()
+ 
+     def _on_wake_detected(self) -> None:
+         """Called from the detector thread when 'Hey Nova' is heard."""
+-        self.wake(reason="wake word")
++        self.wake(reason="wake word ('Hey Nova')")
+ 
+     def wake(self, reason: str = "wake word") -> None:
+@@ -587,7 +609,8 @@
+
+         self._awake = True
+         self._last_user_speech = time.monotonic()
++        print(f"[NOVA] [WAKE ACTIVATION] Source/Reason: {reason} | Time: {datetime.now().strftime('%H:%M:%S')}")
+         if not self.ui.muted:
+             self.ui.set_state("LISTENING")
+-        self.ui.write_log(f"SYS: NOVA activated — listening for command.")
++        self.ui.write_log(f"SYS: ⚡ NOVA activated ({reason}) — listening for command.")
+         self.speak(f"Acknowledge activation immediately by saying: '{self._asst_name} activated. Online and listening for your command.' in one short, direct sentence. Do not read news or summaries.")
+ 
+@@ -596,7 +619,21 @@
+
+             return
+         self._awake = False
++        print(f"[NOVA] [SLEEP ACTIVATION] Reason: {reason} | Time: {datetime.now().strftime('%H:%M:%S')}")
+         self.set_speaking(False)
++        if self.out_queue:
++            while not self.out_queue.empty():
++                try:
++                    self.out_queue.get_nowait()
++                except Exception:
++                    break
++        if self.audio_in_queue:
++            while not self.audio_in_queue.empty():
++                try:
++                    self.audio_in_queue.get_nowait()
++                except Exception:
++                    break
++        self._pending_vision = None
+         self.ui.set_state("SLEEPING")
+-        self.ui.write_log(f"SYS: Sleeping — {reason}. Say 'Hey Nova' to wake me.")
++        self.ui.write_log(f"SYS: 💤 Sleeping ({reason}). Say 'Hey Nova' or tap WAKE NOW to wake me.")
+ 
+     async def _run_sleep_watch(self) -> None:
+@@ -633,10 +670,8 @@
+
+     def _ui_wake_manual(self) -> None:
+         """Manual sleep/wake button in the UI."""
+-        if not self._wake_enabled:
+-            return
+         if self._awake:
+-            self.sleep(reason="you tapped sleep")
++            self.sleep(reason="manual sleep button")
+         else:
+-            self.wake(reason="you tapped wake")
++            self.wake(reason="manual wake button")
+ 
+     def _ui_wake_install(self) -> tuple[bool, str]:
+@@ -719,17 +754,4 @@
+
+         raise _ReconnectSignal(keep_context=keep)
+ 
+-    def _make_remote_key(self):
+-        """Called from Qt main thread when user presses Remote Control."""
+-        if self._dashboard is None:
+-            self.ui.write_log(
+-                "SYS: Dashboard unavailable. "
+-                "Run: pip install fastapi \"uvicorn[standard]\" cryptography"
+-            )
+-            return None
+-        key    = self._dashboard.new_key()
+-        url    = self._dashboard.get_url()
+-        manual = self._dashboard.get_manual_url()
+-        return url, key, f"{url}/auto-login?key={key}", manual
+-
+     def _on_text_command(self, text: str):
+         if not self._loop or not self.session:
+@@ -745,7 +767,8 @@
+
+             self.wake(reason="command")
+             return
+-        if self._wake_enabled and not self._awake:
+-            self.ui.write_log("SYS: I'm asleep — say 'Hey Nova' or tap WAKE NOW first.")
+-            return
++        if not self._awake:
++            self.wake(reason="text command")
++        self._last_user_speech = time.monotonic()
++        print(f"[NOVA] 📩 Text command received: '{text}'")
+         asyncio.run_coroutine_threadsafe(
+             self.session.send_client_content(
+@@ -978,5 +1001,36 @@
+
+         args = dict(fc.args or {})
+ 
+-        print(f"[NOVA] 🔧 {name}  {args}")
++        # Requirement 6 & Security: Reject actions when asleep/inactive
++        if not self._awake:
++            reason = "Assistant is asleep / inactive."
++            print(f"[NOVA] [ACTION REJECTED] Tool '{name}' | Reason: {reason}")
++            self.ui.write_log(f"SYS: 🚫 Blocked unsolicited action '{name}' — NOVA is asleep.")
++            return types.FunctionResponse(
++                id=fc.id, name=name,
++                response={"result": f"Action blocked: NOVA is currently in sleep mode. Wake up NOVA before executing actions.", "error": reason}
++            )
++
++        # Requirement 6 & Security: Reject stale or unsolicited destructive/computer actions
++        time_since_speech = time.monotonic() - self._last_user_speech
++        if name in ("computer_control", "computer_settings", "file_processor", "file_controller") and time_since_speech > 60.0:
++            reason = f"Stale or unsolicited action ({time_since_speech:.1f}s since last user command)."
++            print(f"[NOVA] [ACTION REJECTED] Tool '{name}' | Reason: {reason}")
++            self.ui.write_log(f"SYS: 🚫 Blocked action '{name}' — no recent user command ({time_since_speech:.0f}s elapsed).")
++            return types.FunctionResponse(
++                id=fc.id, name=name,
++                response={"result": "Action blocked: No recent user command. Do not execute system actions unless the user explicitly requested it.", "error": reason}
++            )
++
++        # Requirement Security: Reject empty arguments for critical tools
++        if name in ("computer_control", "file_processor", "file_controller") and not args:
++            reason = "Empty arguments provided for critical action."
++            print(f"[NOVA] [ACTION REJECTED] Tool '{name}' | Reason: {reason}")
++            self.ui.write_log(f"SYS: 🚫 Blocked action '{name}' — empty parameters.")
++            return types.FunctionResponse(
++                id=fc.id, name=name,
++                response={"result": "Action blocked: Missing command parameters.", "error": reason}
++            )
++
++        print(f"[NOVA] [EXECUTING ACTION] {name} | Args: {args} | User command age: {time_since_speech:.1f}s")
+         self.ui.set_state("THINKING")
+ 
+@@ -1148,8 +1202,7 @@
+
+ 
+         def callback(indata, frames, time_info, status):
+-            if self._wake_enabled and not self._awake:
+-                det = self._wake_detector
+-                if det is not None:
+-                    det.feed(indata)
++            if not self._awake:
++                if self._wake_enabled and self._wake_detector is not None:
++                    self._wake_detector.feed(indata)
+                 return
+             with self._speaking_lock:
+@@ -1173,5 +1226,5 @@
+
+                 return
+ 
+-            if not self.ui.muted and not self._phone_active:
++            if not self.ui.muted:
+                 data = indata.tobytes()
+                 def _safe_put(item):
+@@ -1705,27 +1758,4 @@
+
+ 
+ 
+-    async def _relay_phone_audio(self) -> None:
+-        """Forward phone mic PCM chunks from dashboard queue into the Gemini Live session."""
+-        q = self._dashboard._phone_audio_queue
+-        while True:
+-            try:
+-                chunk = await asyncio.wait_for(q.get(), timeout=1.0)
+-            except asyncio.TimeoutError:
+-                self._phone_active = False
+-                continue
+-            self._phone_active = True
+-            with self._speaking_lock:
+-                speaking = self._is_speaking
+-            if not speaking and not self.ui.muted:
+-                try:
+-                    self.out_queue.put_nowait(chunk)
+-                except asyncio.QueueFull:
+-                    pass
+-
+-    def _on_phone_connected(self) -> None:
+-        self.ui.write_log("SYS: Phone connected via Remote Dashboard.")
+-        self.ui.notify_phone_connected()
+-
+-
+     async def _process_dashboard_commands(self) -> None:
+         while True:
+@@ -1775,5 +1805,4 @@
+
+             from dashboard.server import DashboardServer
+             self._dashboard = DashboardServer()
+-            self._dashboard.set_connect_callback(self._on_phone_connected)
+             asyncio.create_task(self._dashboard.serve())
+             asyncio.create_task(self._process_dashboard_commands())
+@@ -1818,9 +1847,10 @@
+
+                         self._awake = False
+                         self.ui.set_state("SLEEPING")
+-                        self.ui.write_log("SYS: NOVA online — sleeping. Say 'Hey Nova' to wake me.")
++                        self.ui.write_log("SYS: NOVA online — sleeping (safe mode). Say 'Hey Nova' to wake me.")
+                     else:
+-                        self._awake = True
+-                        self.ui.set_state("LISTENING")
+-                        self.ui.write_log("SYS: NOVA online.")
++                        self._awake = False
++                        self.ui.set_state("SLEEPING")
++                        self.ui.write_log("SYS: NOVA online — sleeping (safe mode). Tap WAKE NOW to activate.")
++                    print("[NOVA] Assistant online in safe SLEEPING mode. Audio path closed to cloud until activated.")
+ 
+                     if self._dashboard:
+@@ -1837,6 +1867,4 @@
+
+                     tg.create_task(self._run_proactive_mode())
+                     tg.create_task(self._run_sleep_watch())
+-                    if self._dashboard:
+-                        tg.create_task(self._relay_phone_audio())
+ 
+                     if not self._briefing_sent and get_brief_enabled() and self._awake:
+@@ -1934,17 +1962,141 @@
+
+             await asyncio.sleep(delay)
+ 
++class SingleInstanceLock:
++    def __init__(self, app_name="NovaAssistant_SingleInstance_Mutex"):
++        self.app_name = app_name
++        self._mutex = None
++        self._lock_file = None
++        self._lock_path = None
++        self._acquired = False
++
++    def acquire(self) -> bool:
++        if sys.platform == "win32":
++            try:
++                import ctypes
++                kernel32 = ctypes.windll.kernel32
++                mutex_name = f"Local\\{self.app_name}"
++                self._mutex = kernel32.CreateMutexW(None, True, mutex_name)
++                last_error = kernel32.GetLastError()
++                if last_error == 183:  # ERROR_ALREADY_EXISTS
++                    if self._mutex:
++                        kernel32.CloseHandle(self._mutex)
++                        self._mutex = None
++                    return False
++                self._acquired = True
++                return True
++            except Exception as e:
++                print(f"[Lock] Mutex creation failed, using file fallback: {e}")
++
++        try:
++            import tempfile
++            self._lock_path = Path(tempfile.gettempdir()) / f"{self.app_name}.lock"
++            self._lock_file = open(self._lock_path, "a+")
++            if sys.platform == "win32":
++                import msvcrt
++                try:
++                    self._lock_file.seek(0)
++                    msvcrt.locking(self._lock_file.fileno(), msvcrt.LK_NBLCK, 1)
++                except (IOError, OSError):
++                    self._lock_file.close()
++                    self._lock_file = None
++                    return False
++            else:
++                import fcntl
++                try:
++                    fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
++                except (IOError, OSError):
++                    self._lock_file.close()
++                    self._lock_file = None
++                    return False
++            self._lock_file.seek(0)
++            self._lock_file.truncate()
++            self._lock_file.write(str(os.getpid()))
++            self._lock_file.flush()
++            self._acquired = True
++            return True
++        except Exception as e:
++            print(f"[Lock] Lockfile error: {e}")
++            return False
++
++    def release(self):
++        if not self._acquired:
++            return
++        if sys.platform == "win32" and self._mutex:
++            try:
++                import ctypes
++                ctypes.windll.kernel32.ReleaseMutex(self._mutex)
++                ctypes.windll.kernel32.CloseHandle(self._mutex)
++            except Exception:
++                pass
++            self._mutex = None
++        if self._lock_file:
++            try:
++                if sys.platform == "win32":
++                    import msvcrt
++                    self._lock_file.seek(0)
++                    msvcrt.locking(self._lock_file.fileno(), msvcrt.LK_UNLCK, 1)
++                else:
++                    import fcntl
++                    fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
++                self._lock_file.close()
++            except Exception:
++                pass
++            self._lock_file = None
++            if self._lock_path and self._lock_path.exists():
++                try:
++                    self._lock_path.unlink(missing_ok=True)
++                except Exception:
++                    pass
++        self._acquired = False
++
++
+ def main():
++    lock = SingleInstanceLock()
++    if not lock.acquire():
++        print("[NOVA] ❌ Another instance of NOVA is already running.")
++        print("[NOVA] 🔒 Terminating to prevent duplicate execution, port conflicts, and accidental activations.")
++        if sys.platform == "win32":
++            try:
++                import ctypes
++                user32 = ctypes.windll.user32
++                def _enum_win_cb(hwnd, extra):
++                    length = user32.GetWindowTextLengthW(hwnd)
++                    if length > 0:
++                        buff = ctypes.create_unicode_buffer(length + 1)
++                        user32.GetWindowTextW(hwnd, buff, length + 1)
++                        if "NOVA —" in buff.value or "NOVA -" in buff.value:
++                            user32.ShowWindow(hwnd, 9)
++                            user32.SetForegroundWindow(hwnd)
++                            return False
++                    return True
++                WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
++                user32.EnumWindows(WNDENUMPROC(_enum_win_cb), 0)
++            except Exception:
++                pass
++        sys.exit(0)
++
++    import atexit
++    atexit.register(lock.release)
++
+     ui = NovaUI("face.png")
++    nova = NovaLive(ui)
++    ui.on_close = nova.stop
+ 
+     def runner():
+         ui.wait_for_api_key()
+-        nova = NovaLive(ui)
+         try:
+             asyncio.run(nova.run())
+-        except KeyboardInterrupt:
++        except (KeyboardInterrupt, asyncio.CancelledError):
+             print("\n🔴 Shutting down...")
++        finally:
++            lock.release()
+ 
+     threading.Thread(target=runner, daemon=True).start()
+-    ui.root.mainloop()
++    try:
++        ui.root.mainloop()
++    finally:
++        nova.stop()
++        lock.release()
++        sys.exit(0)
+ 
+ if __name__ == "__main__":

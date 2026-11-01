@@ -1,0 +1,63 @@
+{
+  "identity": {
+    "language": {
+      "value": "Tamil",
+      "updated": "2026-10-31"
+    },
+    "name": {
+      "value": "Niranjan",
+      "updated": "2026-10-21"
+    },
+    "nickname": {
+      "value": "Niranjan",
+      "updated": "2026-10-30"
+    },
+    "creators": {
+      "value": "Niranjan, Prakash, Naveen Prasad",
+      "updated": "2026-10-30"
+    }
+  },
+  "preferences": {
+    "wants_to_learn": {
+      "value": "English",
+      "updated": "2026-10-20"
+    },
+    "wants_to_learn_new": {
+      "value": "English",
+      "updated": "2026-10-21"
+    },
+    "learning_goals": {
+      "value": "English ",
+      "updated": "2026-10-21"
+    }
+  },
+  "projects": {},
+  "relationships": {
+    "user_name": {
+      "value": "Naveen",
+      "updated": "2026-10-21"
+    }
+  },
+  "wishes": {},
+  "notes": {
+    "last_topic": {
+      "value": "surnames",
+      "updated": "2026-10-21"
+    }
+  },
+  "sessions": [],
+  "monitors": {
+    "mp3_background_processing": {
+      "topic": "MP3 background processing",
+      "added": "2026-10-21",
+      "last_check": "2026-10-24",
+      "last_hash": "20a4f57058c2"
+    },
+    "high_ram_usage": {
+      "topic": "high RAM usage",
+      "added": "2026-10-21",
+      "last_check": "2026-10-24",
+      "last_hash": "86577320aa22"
+    }
+  }
+}
